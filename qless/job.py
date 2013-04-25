@@ -6,7 +6,7 @@ import types
 import traceback
 from qless import logger
 import simplejson as json
-from qless.exceptions import LostLockException
+from qless.exceptions import LostLockException, QlessException
 
 class BaseJob(object):
     '''This is a dictionary of all the classes that we've seen, and
@@ -25,8 +25,8 @@ class BaseJob(object):
 
     def __setattr__(self, key, value):
         if key == 'priority':
-            return self.client._priority([],
-                [self.jid, value]) and object.__setattr__(self, key, value)
+            return self.client._qless([], ['priority', repr(time.time()),
+                self.jid, value]) and object.__setattr__(self, key, value)
         else:
             return object.__setattr__(self, key, value)
 
@@ -66,17 +66,15 @@ class BaseJob(object):
         '''Cancel a job. It will be deleted from the system, the thinking
         being that if you don't want to do any work on it, it shouldn't be in
         the queueing system.'''
-        return self.client._cancel([], [self.jid])
+        return self.client._qless([], ['cancel', repr(time.time()), self.jid])
 
     def tag(self, *tags):
         '''Tag a job with additional tags'''
-        return self.client._tag([], ['add', self.jid,
-            repr(time.time())] + list(tags))
+        return self.client._qless([], ['tag', repr(time.time()), 'add', self.jid] + list(tags))
 
     def untag(self, *tags):
         '''Remove tags from a job'''
-        return self.client._tag([], ['remove', self.jid,
-            repr(time.time())] + list(tags))
+        return self.client._qless([], ['tag', repr(time.time()), 'remove', self.jid] + list(tags))
 
 class Job(BaseJob):
     '''The Job class'''
@@ -161,11 +159,10 @@ class Job(BaseJob):
         delay, and dependencies'''
         logger.info('Moving %s to %s from %s' % (
             self.jid, queue, self.queue_name))
-        return self.client._put([queue], [
+        return self.client._qless([], ['put', repr(time.time()), queue,
             self.jid,
             self.klass_name,
             json.dumps(self.data),
-            repr(time.time()),
             delay,
             'depends', json.dumps(depends or [])
         ])
@@ -177,24 +174,25 @@ class Job(BaseJob):
         if next:
             logger.info('Advancing %s to %s from %s' % (
                 self.jid, next, self.queue_name))
-            return self.client._complete([], [self.jid,
-                self.client.worker_name, self.queue_name, repr(time.time()),
+            return self.client._qless([], ['complete', repr(time.time()),
+                self.jid, self.client.worker_name, self.queue_name,
                 json.dumps(self.data), 'next', next, 'delay', delay or 0,
                 'depends', json.dumps(depends or [])]) or False
         else:
             logger.info('Completing %s' % self.jid)
-            return self.client._complete([], [self.jid,
-                self.client.worker_name, self.queue_name, repr(time.time()),
+            return self.client._qless([], ['complete', repr(time.time()),
+                self.jid, self.client.worker_name, self.queue_name,
                 json.dumps(self.data)]) or False
 
     def heartbeat(self):
         '''Renew the heartbeat, if possible, and optionally update the job's
         user data.'''
         logger.debug('Heartbeating %s (ttl = %s)' % (self.jid, self.ttl))
-        self.expires_at = float(self.client._heartbeat([], [self.jid,
-            self.client.worker_name, repr(time.time()),
+        try:
+            self.expires_at = float(self.client._qless([], ['heartbeat', repr(time.time()), self.jid,
+            self.client.worker_name,
             json.dumps(self.data)]) or 0)
-        if self.expires_at == 0.0:
+        except QlessException:
             raise LostLockException(self.jid)
         logger.debug('Heartbeated %s (ttl = %s)' % (self.jid, self.ttl))
         return self.expires_at
@@ -218,22 +216,22 @@ class Job(BaseJob):
         completed. __Returns__ the id of the failed job if successful, or
         `False` on failure.'''
         logger.warn('Failing %s (%s): %s' % (self.jid, group, message))
-        return self.client._fail([], [self.jid, self.client.worker_name, group,
-            message, repr(time.time()), json.dumps(self.data)]) or False
+        return self.client._qless([], ['fail', repr(time.time()), self.jid, self.client.worker_name, group,
+            message, json.dumps(self.data)]) or False
 
     def track(self):
         '''Begin tracking this job'''
-        return self.client._track([], ['track', self.jid, repr(time.time())])
+        return self.client._qless([], ['track', repr(time.time()), 'track', self.jid])
 
     def untrack(self):
         '''Stop tracking this job'''
-        return self.client._track([], ['untrack', self.jid, repr(time.time())])
+        return self.client._qless([], ['track', repr(time.time()), 'untrack', self.jid])
 
     def retry(self, delay=0):
         '''Retry this job in a little bit, in the same queue. This is meant
         for the times when you detect a transient failure yourself'''
-        result = self.client._retry([], [self.jid, self.queue_name,
-            self.worker_name, repr(time.time()), delay])
+        result = self.client._qless([], ['retry', repr(time.time()), self.jid,
+            self.queue_name, self.worker_name, delay])
         if result == None:
             return False
         return result
@@ -241,7 +239,7 @@ class Job(BaseJob):
     def depend(self, *args):
         '''If and only if a job already has other dependencies, this will add
         more jids to the list of this job's dependencies.'''
-        return self.client._depends([], [self.jid, 'on'] + list(args)) or False
+        return self.client._qless([], ['depends', repr(time.time()), self.jid, 'on'] + list(args)) or False
 
     def undepend(self, *args, **kwargs):
         '''Remove specific (or all) job dependencies from this job:
@@ -249,9 +247,9 @@ class Job(BaseJob):
             job.remove(jid1, jid2)
             job.remove(all=True)'''
         if kwargs.get('all', False):
-            return self.client._depends([], [self.jid, 'off', 'all']) or False
+            return self.client._qless([], ['depends', repr(time.time()), self.jid, 'off', 'all']) or False
         else:
-            return self.client._depends([], [
+            return self.client._qless([], ['depends', repr(time.time()), 
                 self.jid, 'off'] +list(args)) or False
 
 class RecurringJob(BaseJob):

@@ -34,34 +34,35 @@ class Jobs(object):
 
     def complete(self, offset=0, count=25):
         '''Return the paginated jids of complete jobs'''
-        return self.client._jobs([], ['complete', offset, count])
+        return self.client._qless([], ['jobs', repr(time.time()), 'complete', offset, count])
 
     def tracked(self):
         '''Return an array of job objects that are being tracked'''
-        results = json.loads(self.client._track([], []))
+        results = json.loads(self.client._qless([], ['track', repr(time.time())]))
         results['jobs'] = [Job(self, **j) for j in results['jobs']]
         return results
 
     def tagged(self, tag, offset=0, count=25):
         '''Return the paginated jids of jobs tagged with a tag'''
-        return json.loads(self.client._tag([], ['get', tag, offset, count]))
+        return json.loads(self.client._qless([], ['tag', repr(time.time()), 'get', tag, offset, count]))
 
     def failed(self, group=None, start=0, limit=25):
         '''If no group is provided, this returns a JSON blob of the counts of
         the various types of failures known. If a type is provided, returns
         paginated job objects affected by that kind of failure.'''
         if not group:
-            return json.loads(self.client._failed([], []))
+            return json.loads(self.client._qless(
+                [], ['failed', repr(time.time())]))
         else:
             results = json.loads(
-                self.client._failed([], [group, start, limit]))
+                self.client._qless([], ['failed', time.time(), group, start, limit]))
             results['jobs'] = [Job(self.client, **j) for j in results['jobs']]
             return results
 
     def __getitem__(self, jid):
         '''Get a job object corresponding to that jid, or ``None`` if it
         doesn't exist'''
-        results = self.client._get([], [jid])
+        results = self.client._qless([], ['get', time.time(), jid])
         if not results:
             results = self.client._recur([], ['get', jid])
             if not results:
@@ -78,13 +79,13 @@ class Workers(object):
     def __getattr__(self, attr):
         '''What workers are workers, and how many jobs are they running'''
         if attr == 'counts':
-            return json.loads(self.client._workers([], [time.time()]))
+            return json.loads(self.client._qless([], ['workers', time.time()]))
         raise AttributeError('qless.Workers has no attribute %s' % attr)
 
     def __getitem__(self, worker_name):
         '''Which jobs does a particular worker have running'''
         result = json.loads(
-            self.client._workers([], [time.time(), worker_name]))
+            self.client._qless([], ['workers', time.time(), worker_name]))
         result['jobs']    = result['jobs'] or []
         result['stalled'] = result['stalled'] or []
         return result
@@ -98,7 +99,7 @@ class Queues(object):
         '''What queues are there, and how many jobs do they have running,
         waiting, scheduled, etc.'''
         if attr == 'counts':
-            return json.loads(self.client._queues([], [time.time()]))
+            return json.loads(self.client._qless([], ['queues', time.time()]))
         raise AttributeError('qless.Queues has no attribute %s' % attr)
 
     def __getitem__(self, queue_name):
@@ -164,9 +165,7 @@ class client(object):
         self.queues  = Queues(self)
         # Client's lua scripts
         for cmd in [
-            'cancel', 'config', 'complete', 'depends', 'fail', 'failed', 'get',
-            'heartbeat', 'jobs', 'peek', 'pop', 'priority', 'put', 'queues',
-            'recur', 'retry', 'stats', 'tag', 'track', 'unfail', 'workers']:
+            'qless', 'recur', 'unfail', 'debug']:
             setattr(self, '_%s' % cmd, lua(cmd, self.redis))
 
     def __getattr__(self, key):
@@ -178,15 +177,15 @@ class client(object):
 
     def track(self, jid):
         '''Begin tracking this job'''
-        return self._track([], ['track', jid, repr(time.time())])
+        return self._qless([], ['track', repr(time.time()), 'track', jid])
 
     def untrack(self, jid):
         '''Stop tracking this job'''
-        return self._track([], ['untrack', jid, repr(time.time())])
+        return self._qless([], ['track', repr(time.time()), 'untrack', jid])
 
     def tags(self, offset=0, count=100):
         '''The most common tags among jobs'''
-        return json.loads(self._tag([], ['top', offset, count]))
+        return json.loads(self._qless([], ['tag', repr(time.time()), 'top', offset, count]))
 
     def event(self):
         '''Listen for a single event'''
