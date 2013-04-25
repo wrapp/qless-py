@@ -2,8 +2,13 @@
 
 import time
 import redis
+import pkgutil
 import logging
 import simplejson as json
+
+# Internal imports
+from .exceptions import QlessException
+
 
 logger = logging.getLogger('qless')
 formatter = logging.Formatter(
@@ -14,14 +19,15 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel(logging.FATAL)
 
+
 # A decorator to specify a bunch of exceptions that should be caught
 # and the job retried. It turns out this comes up with relative frequency
-def retry(*exceptions):
+def retry(*excepts):
     def decorator(f):
         def _f(job):
             try:
                 f(job)
-            except tuple(exceptions):
+            except tuple(excepts):
                 job.retry()
         return _f
     return decorator
@@ -34,40 +40,40 @@ class Jobs(object):
 
     def complete(self, offset=0, count=25):
         '''Return the paginated jids of complete jobs'''
-        return self.client._qless([], ['jobs', repr(time.time()), 'complete', offset, count])
+        return self.client('jobs', 'complete', offset, count)
 
     def tracked(self):
         '''Return an array of job objects that are being tracked'''
-        results = json.loads(self.client._qless([], ['track', repr(time.time())]))
-        results['jobs'] = [Job(self, **j) for j in results['jobs']]
+        results = json.loads(self.client('track'))
+        results['jobs'] = [Job(self, **job) for job in results['jobs']]
         return results
 
     def tagged(self, tag, offset=0, count=25):
         '''Return the paginated jids of jobs tagged with a tag'''
-        return json.loads(self.client._qless([], ['tag', repr(time.time()), 'get', tag, offset, count]))
+        return json.loads(self.client('tag', 'get', tag, offset, count))
 
     def failed(self, group=None, start=0, limit=25):
         '''If no group is provided, this returns a JSON blob of the counts of
         the various types of failures known. If a type is provided, returns
         paginated job objects affected by that kind of failure.'''
         if not group:
-            return json.loads(self.client._qless(
-                [], ['failed', repr(time.time())]))
+            return json.loads(self.client('failed'))
         else:
             results = json.loads(
-                self.client._qless([], ['failed', time.time(), group, start, limit]))
+                self.client('failed', group, start, limit))
             results['jobs'] = [Job(self.client, **j) for j in results['jobs']]
             return results
 
     def __getitem__(self, jid):
         '''Get a job object corresponding to that jid, or ``None`` if it
         doesn't exist'''
-        results = self.client._qless([], ['get', time.time(), jid])
+        results = self.client('get', jid)
         if not results:
-            results = self.client._recur([], ['get', jid])
+            results = json.loads(
+                self.client('recur.get', jid))
             if not results:
                 return None
-            return RecurringJob(self.client, **json.loads(results))
+            return RecurringJob(self.client, **results)
         return Job(self.client, **json.loads(results))
 
 
@@ -79,13 +85,13 @@ class Workers(object):
     def __getattr__(self, attr):
         '''What workers are workers, and how many jobs are they running'''
         if attr == 'counts':
-            return json.loads(self.client._qless([], ['workers', time.time()]))
+            return json.loads(self.client('workers'))
         raise AttributeError('qless.Workers has no attribute %s' % attr)
 
     def __getitem__(self, worker_name):
         '''Which jobs does a particular worker have running'''
         result = json.loads(
-            self.client._qless([], ['workers', time.time(), worker_name]))
+            self.client('workers', worker_name))
         result['jobs']    = result['jobs'] or []
         result['stalled'] = result['stalled'] or []
         return result
@@ -99,7 +105,7 @@ class Queues(object):
         '''What queues are there, and how many jobs do they have running,
         waiting, scheduled, etc.'''
         if attr == 'counts':
-            return json.loads(self.client._qless([], ['queues', time.time()]))
+            return json.loads(self.client('queues'))
         raise AttributeError('qless.Queues has no attribute %s' % attr)
 
     def __getitem__(self, queue_name):
@@ -163,10 +169,11 @@ class client(object):
         self.jobs    = Jobs(self)
         self.workers = Workers(self)
         self.queues  = Queues(self)
-        # Client's lua scripts
-        for cmd in [
-            'qless', 'recur', 'unfail', 'debug']:
-            setattr(self, '_%s' % cmd, lua(cmd, self.redis))
+
+        # We now have a single unified core script.
+        data = pkgutil.get_data('qless', 'qless-core/qless.lua')
+        self._lua = self.redis.register_script(data)
+        #self._lua = lua('qless')
 
     def __getattr__(self, key):
         if key == 'events':
@@ -175,17 +182,25 @@ class client(object):
         raise AttributeError('%s has no attribute %s' % (
             self.__class__.__module__ + '.' + self.__class__.__name__, key))
 
+    def __call__(self, command, *args):
+        lua_args = [command, repr(time.time())]
+        lua_args.extend(args)
+        try:
+            return self._lua(keys=[], args=lua_args)
+        except redis.ResponseError as exc:
+            raise QlessException(exc.message)
+
     def track(self, jid):
         '''Begin tracking this job'''
-        return self._qless([], ['track', repr(time.time()), 'track', jid])
+        return self('track', 'track', jid)
 
     def untrack(self, jid):
         '''Stop tracking this job'''
-        return self._qless([], ['track', repr(time.time()), 'untrack', jid])
+        return self('track', 'untrack', jid)
 
     def tags(self, offset=0, count=100):
         '''The most common tags among jobs'''
-        return json.loads(self._qless([], ['tag', repr(time.time()), 'top', offset, count]))
+        return json.loads(self('tag', 'top', offset, count))
 
     def event(self):
         '''Listen for a single event'''
@@ -198,7 +213,7 @@ class client(object):
 
     def unfail(self, group, queue, count=500):
         '''Move jobs from the failed group to the provided queue'''
-        return self._unfail([], [repr(time.time()), group, queue, count])
+        return self('unfail', queue, group, count)
 
 from .lua import lua
 from .job import Job, RecurringJob

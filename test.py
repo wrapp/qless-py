@@ -10,7 +10,7 @@ from qless.exceptions import LostLockException, QlessException
 
 from qless import logger
 import logging
-logger.setLevel(logging.DEBUG)
+#logger.setLevel(logging.DEBUG)
 
 class FooJob(qless.Job):
     pass
@@ -39,7 +39,9 @@ time.unfreeze = _unfreeze
 time.advance  = _advance
 time.time     = _time
 
+
 class TestQless(unittest.TestCase):
+    '''Base class for all of our tests'''
     @classmethod
     def setUpClass(cls):
         cls.redis = redis.Redis()
@@ -921,7 +923,7 @@ class TestTag(TestQless):
         job.tag('foo', 'bar')
         self.assertEqual(self.client.jobs.tagged('foo'), {'total': 1, 'jobs': [job.jid]})
         self.assertEqual(self.client.jobs.tagged('bar'), {'total': 1, 'jobs': [job.jid]})
-        job.complete()
+        self.assertEqual(job.complete(), 'complete')
         self.assertEqual(self.client.jobs[job.jid], None)
         self.assertEqual(self.client.jobs.tagged('foo'), {'total': 0, 'jobs': {}})
         self.assertEqual(self.client.jobs.tagged('bar'), {'total': 0, 'jobs': {}})
@@ -1066,9 +1068,9 @@ class TestFail(TestQless):
         job = self.q.pop()
         job.fail('foo', 'some message')
         job.move('testing')
-        # job = self.q.pop()
-        # self.assertEqual(job.complete(), 'complete')
-        # self.assertEqual(self.client.jobs[jid].failure, {})
+        job = self.q.pop()
+        self.assertEqual(job.complete(), 'complete')
+        self.assertEqual(self.client.jobs[jid].failure, {})
 
     def test_unfail(self):
         # We should be able to unfail jobs in batch. First, fail a large number

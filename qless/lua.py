@@ -20,17 +20,16 @@ class lua(object):
         self.sha = self.redis.execute_command('script', 'load', data)
         logger.debug('Loaded script %s (%s)' % (self.name, repr(self.sha)))
 
-    def __call__(self, keys, args):
+    def __call__(self, *args):
         if self.sha == None:
             self.reload()
         try:
-            return self.redis.execute_command(
-                'evalsha', self.sha, len(keys), *(keys + args))
+            return self.redis.execute_command('evalsha', self.sha, 0, *args)
         except ResponseError as exc:
             if 'NOSCRIPT' in exc.message:
                 self.reload()
             try:
                 return self.redis.execute_command(
-                    'evalsha', self.sha, len(keys), *(keys + args))
+                    'evalsha', self.sha, 0, *args)
             except ResponseError as exc:
                 raise QlessException(exc.message)
