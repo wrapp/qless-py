@@ -81,7 +81,10 @@ class Worker(object):
                 end   = ((i+1) * len(jids_to_resume)) / self.count
                 self.jids      = jids_to_resume[start:end]
                 return self.work()
-        
+
+        if self.master:
+            signal.signal(signal.SIGTERM, lambda s, f: self.stop())
+
         while self.master:
             try:
                 pid, status = os.wait()
